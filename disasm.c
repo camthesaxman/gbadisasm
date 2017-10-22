@@ -11,12 +11,6 @@
 #define ROM_LOAD_ADDR 0x08000000
 #define UNKNOWN_SIZE (uint32_t)-1
 
-struct LabelName
-{
-    uint32_t addr;
-    char *name;
-};
-
 enum BranchType
 {
     BRANCH_TYPE_UNKNOWN,
@@ -31,10 +25,9 @@ struct Label
     uint8_t branchType;
     uint32_t size;
     bool processed;
+    char *name;
 };
 
-static struct LabelName *sLabelNames = NULL;
-static int sLabelNamesCount = 0;
 struct Label *gLabels = NULL;
 int gLabelsCount = 0;
 static csh sCapstone;
@@ -42,34 +35,7 @@ static csh sCapstone;
 const bool gOptionShowAddrComments = false;
 const int gOptionDataColumnWidth = 16;
 
-void disasm_add_name(uint32_t addr, const char *name)
-{
-    int i;
-    int namelen;
-    char *name_;
-
-    namelen = strlen(name);
-    name_ = malloc(namelen + 1);
-    name_[namelen] = '\0';
-
-    // Search for label
-    for (i = 0; i < sLabelNamesCount; i++)
-    {
-        if (sLabelNames[i].addr == addr)
-        {
-            free(sLabelNames[i].name);
-            sLabelNames[i].name = name_;
-            return;
-        }
-    }
-    
-    i = sLabelNamesCount++;
-    sLabelNames = realloc(sLabelNames, sLabelNamesCount * sizeof(*sLabelNames));
-    sLabelNames[i].addr = addr;
-    sLabelNames[i].name = name_;
-}
-
-int disasm_add_label(uint32_t addr, uint8_t type)
+int disasm_add_label(uint32_t addr, uint8_t type, char *name)
 {
     int i;
 
@@ -90,8 +56,9 @@ int disasm_add_label(uint32_t addr, uint8_t type)
     gLabels[i].addr = addr;
     gLabels[i].type = type;
     gLabels[i].branchType = BRANCH_TYPE_UNKNOWN;
-    gLabels[i].processed = false;
     gLabels[i].size = UNKNOWN_SIZE;
+    gLabels[i].processed = false;
+    gLabels[i].name = name;
     return i;
 }
 
@@ -136,12 +103,15 @@ static bool is_func_return(const struct cs_insn *insn)
 {
     const struct cs_arm *arminsn = &insn->detail->arm;
 
+    // 'bx' instruction
     if (insn->id == ARM_INS_BX)
         return true;
+    // 'mov' with pc as the destination
     if (insn->id == ARM_INS_MOV
      && arminsn->operands[0].type == ARM_OP_REG
      && arminsn->operands[0].reg == ARM_REG_PC)
         return true;
+    // 'pop' with pc in the register list
     if (insn->id == ARM_INS_POP)
     {
         int i;
@@ -219,8 +189,8 @@ static void analyze(void)
 
                         if (!(target >= gLabels[li].addr && target <= currAddr))
                         {
-                            int lbl = disasm_add_label(target, type);
-                            
+                            int lbl = disasm_add_label(target, type, NULL);
+
                             if (insn[i].id == ARM_INS_BL)
                             {
                                 if (gLabels[lbl].branchType != BRANCH_TYPE_B)
@@ -250,7 +220,7 @@ static void analyze(void)
                         if (poolAddr)
                         {
                             assert((poolAddr & 3) == 0);
-                            disasm_add_label(poolAddr, LABEL_POOL);
+                            disasm_add_label(poolAddr, LABEL_POOL, NULL);
                         }
                     }
                 }
@@ -263,18 +233,13 @@ static void analyze(void)
     }
 }
 
-static int qsort_label_compare(const void *a, const void *b)
-{
-    return ((struct Label *)a)->addr - ((struct Label *)b)->addr;
-}
-
 static void print_gap(uint32_t addr, uint32_t nextaddr)
 {
     //uint32_t diff == nextaddr - addr;
 
     if (addr == nextaddr)
         return;
-    
+
     assert(addr < nextaddr);
     if (addr % gOptionDataColumnWidth != 0)
         fputs("\t.byte", stdout);
@@ -291,6 +256,11 @@ static void print_gap(uint32_t addr, uint32_t nextaddr)
     }
 }
 
+static int qsort_label_compare(const void *a, const void *b)
+{
+    return ((struct Label *)a)->addr - ((struct Label *)b)->addr;
+}
+
 static void print_disassembly(void)
 {
     uint32_t addr = ROM_LOAD_ADDR;
@@ -303,10 +273,7 @@ static void print_disassembly(void)
     for (i = 0; i < gLabelsCount; i++)
     {
         if (gLabels[i].type == LABEL_ARM_CODE || gLabels[i].type == LABEL_THUMB_CODE)
-        {
             assert(gLabels[i].processed);
-            //assert(gLabels[i].size != UNKNOWN_SIZE);
-        }
     }
 
     i = 0;
@@ -332,6 +299,7 @@ static void print_disassembly(void)
                 int j;
                 int mode = (gLabels[i].type == LABEL_ARM_CODE) ? CS_MODE_ARM : CS_MODE_THUMB;
 
+                // This is a function. Use the 'sub_XXXXXXXX' label
                 if (gLabels[i].branchType == BRANCH_TYPE_BL)
                 {
                     if (addr & 3)
@@ -339,13 +307,28 @@ static void print_disassembly(void)
                         printf("error: function at 0x%08X is not aligned\n", addr);
                         return;
                     }
-                    printf("\n\t%s sub_%08X\n",
-                      (gLabels[i].type == LABEL_ARM_CODE) ? "ARM_FUNC_START" : "THUMB_FUNC_START", addr);
-                    printf("sub_%08X: @ 0x%08X\n", addr, addr);
+                    if (gLabels[i].name != NULL)
+                    {
+                        printf("\n\t%s %s\n",
+                          (gLabels[i].type == LABEL_ARM_CODE) ? "ARM_FUNC_START" : "THUMB_FUNC_START",
+                          gLabels[i].name);
+                        printf("%s: @ 0x%08X\n", gLabels[i].name, addr);
+                    }
+                    else
+                    {
+                        printf("\n\t%s sub_%08X\n",
+                          (gLabels[i].type == LABEL_ARM_CODE) ? "ARM_FUNC_START" : "THUMB_FUNC_START",
+                          addr);
+                        printf("sub_%08X: @ 0x%08X\n", addr, addr);
+                    }
                 }
+                // Just a normal code label. Use the '_XXXXXXXX' label
                 else
                 {
-                    printf("_%08X:\n", addr);
+                    if (gLabels[i].name != NULL)
+                        printf("%s:\n", gLabels[i].name);
+                    else
+                        printf("_%08X:\n", addr);
                 }
 
                 assert(gLabels[i].size != UNKNOWN_SIZE);
@@ -360,7 +343,7 @@ static void print_disassembly(void)
                     addr += insn[j].size;
                 }
                 cs_free(insn, count);
-                
+
                 // align pool if it comes next
                 if (i + 1 < gLabelsCount && gLabels[i + 1].type == LABEL_POOL)
                 {
@@ -403,19 +386,11 @@ void disasm_disassemble(void)
     }
     cs_option(sCapstone, CS_OPT_DETAIL, CS_OPT_ON);
 
-/*
-    // custom labels
-    disasm_add_label(0x0800D42C, LABEL_THUMB_CODE);
-    disasm_add_label(0x0800D684, LABEL_THUMB_CODE);
-    disasm_add_label(0x081018A0, LABEL_THUMB_CODE);
-    disasm_add_label(0x0800024c, LABEL_THUMB_CODE);
-*/
-
     // entry point
-    disasm_add_label(0x08000000, LABEL_ARM_CODE);
+    disasm_add_label(0x08000000, LABEL_ARM_CODE, NULL);
 
     // rom header
-    disasm_add_label(0x08000004, LABEL_DATA);
+    disasm_add_label(0x08000004, LABEL_DATA, NULL);
 
     analyze();
     print_disassembly();

@@ -79,6 +79,14 @@ static char *skip_whitespace(char *s)
     return s;
 }
 
+static char *dup_string(const char *s)
+{
+    char *new = malloc(strlen(s) + 1);
+
+    strcpy(new, s);
+    return new;
+}
+
 static void read_config(const char *fname)
 {
     FILE *file = fopen(fname, "rb");
@@ -104,6 +112,7 @@ static void read_config(const char *fname)
     while (*line != '\0')
     {
         char *tokens[3];
+        char *name = NULL;
         int i;
 
         next = split_line(line);
@@ -117,10 +126,9 @@ static void read_config(const char *fname)
 
             if (sscanf(tokens[1], "%i", &addr) == 1)
             {
-                //printf("adding arm func 0x%08X, '%s'\n", addr, tokens[2]);
-                disasm_add_label(addr, LABEL_ARM_CODE);
                 if (strlen(tokens[2]) != 0)
-                    disasm_add_name(addr, tokens[2]);
+                    name = dup_string(tokens[2]);
+                disasm_add_label(addr, LABEL_ARM_CODE, name);
             }
             else
             {
@@ -133,9 +141,9 @@ static void read_config(const char *fname)
 
             if (sscanf(tokens[1], "%i", &addr) == 1)
             {
-                disasm_add_label(addr, LABEL_THUMB_CODE);
                 if (strlen(tokens[2]) != 0)
-                    disasm_add_name(addr, tokens[2]);
+                    name = dup_string(tokens[2]);
+                disasm_add_label(addr, LABEL_THUMB_CODE, name);
             }
             else
             {
