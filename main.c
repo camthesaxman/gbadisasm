@@ -107,9 +107,7 @@ static void read_config(const char *fname)
     buffer[size] = '\0';
     fclose(file);
 
-    line = buffer;
-    next = buffer;
-    while (*line != '\0')
+    for (line = next = buffer; *line != '\0'; line = next, lineNum++)
     {
         char *tokens[3];
         char *name = NULL;
@@ -120,6 +118,9 @@ static void read_config(const char *fname)
         tokens[0] = line = skip_whitespace(line);
         for (i = 1; i < 3; i++)
             tokens[i] = line = split_word(line);
+
+        if (tokens[0][0] == '#')
+            continue;
         if (strcmp(tokens[0], "arm_func") == 0)
         {
             int addr;
@@ -154,9 +155,6 @@ static void read_config(const char *fname)
         {
             fprintf(stderr, "%s: warning: unrecognized command '%s' on line %i\n", fname, tokens[0], lineNum);
         }
-
-        line = next;
-        lineNum++;
     }
 
     free(buffer);
