@@ -5,6 +5,7 @@ enum LabelType
     LABEL_THUMB_CODE,
     LABEL_DATA,
     LABEL_POOL,
+    LABEL_JUMP_TABLE,
 };
 
 extern uint8_t *gInputFileBuffer;

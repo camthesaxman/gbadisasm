@@ -176,6 +176,78 @@ static uint32_t get_branch_target(const struct cs_insn *insn)
 
 // Code Analysis
 
+static int sJumpTableState = 0;
+
+static void jump_table_state_machine(const struct cs_insn *insn, uint32_t addr)
+{
+    static uint32_t jumpTableBegin;
+
+    switch (sJumpTableState)
+    {
+      case 0:
+        // "lsl rX, rX, 2"
+        if (insn->id == ARM_INS_LSL)
+            goto match;
+        break;
+      case 1:
+        // "ldr rX, [pc, ?]"
+        if (is_pool_load(insn))
+        {
+            uint32_t poolAddr = get_pool_load(insn, addr, LABEL_THUMB_CODE);
+            jumpTableBegin = word_at(poolAddr);
+            goto match;
+        }
+        break;
+      case 2:
+        // "add rX, rX, rX"
+        if (insn->id == ARM_INS_ADD)
+            goto match;
+        break;
+      case 3:
+        // "ldr rX, [rX]"
+        if (insn->id == ARM_INS_LDR)
+            goto match;
+        break;
+      case 4:
+        // "mov pc, r0"
+        if (insn->id == ARM_INS_MOV
+         && insn->detail->arm.operands[0].type == ARM_OP_REG
+         && insn->detail->arm.operands[0].reg == ARM_REG_PC)
+            goto match;
+        break;
+    }
+
+    // didn't match
+    sJumpTableState = 0;
+    return;
+
+  match:
+    if (sJumpTableState == 4)  // all checks passed
+    {
+        uint32_t target;
+        uint32_t firstTarget = 0xFFFFFFFF;
+
+        disasm_add_label(jumpTableBegin, LABEL_JUMP_TABLE, NULL);
+        sJumpTableState = 0;
+        // add code labels from jump table
+        addr = jumpTableBegin;
+        while (addr < firstTarget)
+        {
+            int label;
+
+            target = word_at(addr);
+            if (target < firstTarget)
+                firstTarget = target;
+            label = disasm_add_label(target, LABEL_THUMB_CODE, NULL);
+            gLabels[label].branchType = BRANCH_TYPE_B;
+            addr += 4;
+        }
+
+        return;
+    }
+    sJumpTableState++;
+}
+
 static void analyze(void)
 {
     while (1)
@@ -196,12 +268,15 @@ static void analyze(void)
         if (type == LABEL_ARM_CODE || type == LABEL_THUMB_CODE)
         {
             cs_option(sCapstone, CS_OPT_MODE, (type == LABEL_ARM_CODE) ? CS_MODE_ARM : CS_MODE_THUMB);
+            sJumpTableState = 0;
             //printf("analyzing label at 0x%08X\n", addr);
             do
             {
                 count = cs_disasm(sCapstone, gInputFileBuffer + addr - ROM_LOAD_ADDR, 0x1000, addr, 0, &insn);
                 for (i = 0; i < count; i++)
                 {
+                    jump_table_state_machine(&insn[i], addr);
+
                     //printf("/*0x%08X*/ %s %s\n", addr, insn[i].mnemonic, insn[i].op_str);
                     if (is_branch(&insn[i]))
                     {
@@ -416,9 +491,23 @@ static void print_disassembly(void)
             }
             break;
         case LABEL_POOL:
-            assert(gLabels[i].size = 4);
-            printf("_%08X: .4byte 0x%08X @ pool\n", addr, word_at(addr));
+            //assert(gLabels[i].size == 4);
+            printf("_%08X: .4byte 0x%08X\n", addr, word_at(addr));
             addr += 4;
+            break;
+        case LABEL_JUMP_TABLE:
+            {
+                uint32_t end = addr + gLabels[i].size;
+                int caseNum = 0;
+
+                printf("_%08X: @ jump table\n", addr);
+                while (addr < end)
+                {
+                    printf("\t.4byte _%08X @ case %i\n", word_at(addr), caseNum);
+                    caseNum++;
+                    addr += 4;
+                }
+            }
             break;
         }
 
