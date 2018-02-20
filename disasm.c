@@ -84,6 +84,12 @@ static uint8_t byte_at(uint32_t addr)
     return gInputFileBuffer[addr - ROM_LOAD_ADDR];
 }
 
+static uint16_t hword_at(uint32_t addr)
+{
+    return (byte_at(addr + 0) << 0)
+         | (byte_at(addr + 1) << 8);
+}
+
 static uint32_t word_at(uint32_t addr)
 {
     return (byte_at(addr + 0) << 0)
@@ -305,7 +311,9 @@ static void analyze(void)
                                     gLabels[lbl].branchType = BRANCH_TYPE_BL;
                                 // if the address right after is a pool, then we know
                                 // for sure that this is a far jump and not a function call
-                                if ((next = lookup_label(addr)) != NULL && next->type == LABEL_POOL)
+                                if (((next = lookup_label(addr)) != NULL && next->type == LABEL_POOL)
+                                // if the 2 bytes following are zero, assume it's padding
+                                 || hword_at(addr) == 0)
                                 {
                                     gLabels[lbl].branchType = BRANCH_TYPE_B;
                                     break;
@@ -403,7 +411,19 @@ static void print_insn(const cs_insn *insn, uint32_t addr, int mode)
              && insn->detail->arm.operands[1].type == ARM_OP_REG
              && insn->detail->arm.operands[1].reg == ARM_REG_SP
              && insn->detail->arm.operands[2].type == ARM_OP_REG)
-                printf("\t%s %s, %s\n", insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), cs_reg_name(sCapstone, insn->detail->arm.operands[1].reg));
+            {
+                printf("\t%s %s, %s\n",
+                  insn->mnemonic,
+                  cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg),
+                  cs_reg_name(sCapstone, insn->detail->arm.operands[1].reg));
+            }
+            // fix adr
+            else if (insn->id == ARM_INS_ADR)
+            {
+                printf("\tadd %s, pc, #0x%X\n",
+                  cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg),
+                  insn->detail->arm.operands[1].imm);
+            }
             else
                 printf("\t%s %s\n", insn->mnemonic, insn->op_str);
         }
