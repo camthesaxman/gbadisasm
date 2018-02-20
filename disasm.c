@@ -299,8 +299,17 @@ static void analyze(void)
 
                             if (insn[i].id == ARM_INS_BL)
                             {
+                                const struct Label *next;
+
                                 if (gLabels[lbl].branchType != BRANCH_TYPE_B)
                                     gLabels[lbl].branchType = BRANCH_TYPE_BL;
+                                // if the address right after is a pool, then we know
+                                // for sure that this is a far jump and not a function call
+                                if ((next = lookup_label(addr)) != NULL && next->type == LABEL_POOL)
+                                {
+                                    gLabels[lbl].branchType = BRANCH_TYPE_B;
+                                    break;
+                                }
                             }
                             else
                             {
