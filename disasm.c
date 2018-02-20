@@ -55,11 +55,28 @@ int disasm_add_label(uint32_t addr, uint8_t type, char *name)
     gLabels = realloc(gLabels, gLabelsCount * sizeof(*gLabels));
     gLabels[i].addr = addr;
     gLabels[i].type = type;
-    gLabels[i].branchType = BRANCH_TYPE_UNKNOWN;
+    if (type == LABEL_ARM_CODE || type == LABEL_THUMB_CODE)
+        gLabels[i].branchType = BRANCH_TYPE_BL;  // assume it's the start of a function
+    else
+        gLabels[i].branchType = BRANCH_TYPE_UNKNOWN;
     gLabels[i].size = UNKNOWN_SIZE;
     gLabels[i].processed = false;
     gLabels[i].name = name;
     return i;
+}
+
+// Utility Functions
+
+static char *lookup_label_name(uint32_t addr)
+{
+    int i;
+
+    for (i = 0; i < gLabelsCount; i++)
+    {
+        if (gLabels[i].addr == addr)
+            return gLabels[i].name;
+    }
+    return NULL;
 }
 
 static uint8_t byte_at(uint32_t addr)
@@ -157,6 +174,8 @@ static uint32_t get_branch_target(const struct cs_insn *insn)
     return insn->detail->arm.operands[0].imm;
 }
 
+// Code Analysis
+
 static void analyze(void)
 {
     while (1)
@@ -245,6 +264,8 @@ static void analyze(void)
     }
 }
 
+// Disassembly Output
+
 static void print_gap(uint32_t addr, uint32_t nextaddr)
 {
     if (addr == nextaddr)
@@ -275,7 +296,15 @@ static void print_insn(const cs_insn *insn, uint32_t addr, int mode)
     else
     {
         if (is_branch(insn) && insn->id != ARM_INS_BX)
-            printf("\t%s _%08X\n", insn->mnemonic, get_branch_target(insn));
+        {
+            uint32_t target = get_branch_target(insn);
+            char *label = lookup_label_name(target);
+
+            if (label != NULL)
+                printf("\t%s %s\n", insn->mnemonic, label);
+            else
+                printf("\t%s _%08X\n", insn->mnemonic, target);
+        }
         else if (is_pool_load(insn))
             printf("\t%s %s, _%08X\n", insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), get_pool_load(insn, addr, mode));
         else
