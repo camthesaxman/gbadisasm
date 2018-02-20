@@ -236,7 +236,7 @@ static void jump_table_state_machine(const struct cs_insn *insn, uint32_t addr)
             int label;
 
             target = word_at(addr);
-            if (target < firstTarget)
+            if (target < firstTarget && target > jumpTableBegin)
                 firstTarget = target;
             label = disasm_add_label(target, LABEL_THUMB_CODE, NULL);
             gLabels[label].branchType = BRANCH_TYPE_B;
@@ -383,9 +383,21 @@ static void print_insn(const cs_insn *insn, uint32_t addr, int mode)
                 printf("\t%s %s_%08X\n", insn->mnemonic, label->branchType == BRANCH_TYPE_BL ? "sub" : "", target);
         }
         else if (is_pool_load(insn))
+        {
             printf("\t%s %s, _%08X\n", insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), get_pool_load(insn, addr, mode));
+        }
         else
-            printf("\t%s %s\n", insn->mnemonic, insn->op_str);
+        {
+            // fix "add rX, sp, rX"
+            if (insn->id == ARM_INS_ADD
+             && insn->detail->arm.operands[0].type == ARM_OP_REG
+             && insn->detail->arm.operands[1].type == ARM_OP_REG
+             && insn->detail->arm.operands[1].reg == ARM_REG_SP
+             && insn->detail->arm.operands[2].type == ARM_OP_REG)
+                printf("\t%s %s, %s\n", insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), cs_reg_name(sCapstone, insn->detail->arm.operands[1].reg));
+            else
+                printf("\t%s %s\n", insn->mnemonic, insn->op_str);
+        }
     }
 }
 
