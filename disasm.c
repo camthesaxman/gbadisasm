@@ -127,22 +127,34 @@ static bool is_func_return(const struct cs_insn *insn)
     return false;
 }
 
-static uint32_t get_pool_load(const struct cs_insn *insn, uint32_t currAddr, int mode)
+static bool is_pool_load(const struct cs_insn *insn)
 {
     const struct cs_arm *arminsn = &insn->detail->arm;
 
-    if (insn->id == ARM_INS_LDR)
-    {
-        assert(arminsn->operands[0].type == ARM_OP_REG);
-        if (arminsn->operands[1].type == ARM_OP_MEM
-         && !arminsn->operands[1].subtracted
-         && arminsn->operands[1].mem.base == ARM_REG_PC
-         && arminsn->operands[1].mem.index == ARM_REG_INVALID)
-        {
-            return (currAddr & ~3) + arminsn->operands[1].mem.disp + ((mode == LABEL_ARM_CODE) ? 8 : 4);
-        }
-    }
-    return 0;
+    if (insn->id == ARM_INS_LDR
+     && arminsn->operands[0].type == ARM_OP_REG
+     && arminsn->operands[1].type == ARM_OP_MEM
+     && !arminsn->operands[1].subtracted
+     && arminsn->operands[1].mem.base == ARM_REG_PC
+     && arminsn->operands[1].mem.index == ARM_REG_INVALID)
+        return true;
+    else
+        return false;
+}
+
+static uint32_t get_pool_load(const struct cs_insn *insn, uint32_t currAddr, int mode)
+{
+    assert(is_pool_load(insn));
+
+    return (currAddr & ~3) + insn->detail->arm.operands[1].mem.disp + ((mode == LABEL_ARM_CODE) ? 8 : 4);
+}
+
+static uint32_t get_branch_target(const struct cs_insn *insn)
+{
+    assert(is_branch(insn));
+    assert(insn->detail != NULL);
+
+    return insn->detail->arm.operands[0].imm;
 }
 
 static void analyze(void)
@@ -182,8 +194,7 @@ static void analyze(void)
                         if (is_func_return(&insn[i]))
                             break;
 
-                        assert(insn[i].detail != NULL);
-                        target = insn[i].detail->arm.operands[0].imm;
+                        target = get_branch_target(&insn[i]);
                         assert(target != 0);
                         //printf("branch target = 0x%08X\n", target);
 
@@ -216,9 +227,10 @@ static void analyze(void)
                             break;
 
                         assert(insn[i].detail != NULL);
-                        poolAddr = get_pool_load(&insn[i], addr - insn[i].size, type);
-                        if (poolAddr)
+                        if (is_pool_load(&insn[i]))
                         {
+                            poolAddr = get_pool_load(&insn[i], addr - insn[i].size, type);
+                            assert(poolAddr != 0);
                             assert((poolAddr & 3) == 0);
                             disasm_add_label(poolAddr, LABEL_POOL, NULL);
                         }
@@ -235,8 +247,6 @@ static void analyze(void)
 
 static void print_gap(uint32_t addr, uint32_t nextaddr)
 {
-    //uint32_t diff == nextaddr - addr;
-
     if (addr == nextaddr)
         return;
 
@@ -253,6 +263,23 @@ static void print_gap(uint32_t addr, uint32_t nextaddr)
         else
             printf(" 0x%02X,", byte_at(addr));
         addr++;
+    }
+}
+
+static void print_insn(const cs_insn *insn, uint32_t addr, int mode)
+{
+    if (gOptionShowAddrComments)
+    {
+        printf("\t/*0x%08X*/ %s %s\n", addr, insn->mnemonic, insn->op_str);
+    }
+    else
+    {
+        if (is_branch(insn))
+            printf("\t%s _%08X\n", insn->mnemonic, get_branch_target(insn));
+        else if (is_pool_load(insn))
+            printf("\t%s %s, _%08X\n", insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), get_pool_load(insn, addr, mode));
+        else
+            printf("\t%s %s\n", insn->mnemonic, insn->op_str);
     }
 }
 
@@ -336,10 +363,7 @@ static void print_disassembly(void)
                 count = cs_disasm(sCapstone, gInputFileBuffer + addr - ROM_LOAD_ADDR, gLabels[i].size, addr, 0, &insn);
                 for (j = 0; j < count; j++)
                 {
-                    if (gOptionShowAddrComments)
-                        printf("\t/*0x%08X*/ %s %s\n", addr, insn[j].mnemonic, insn[j].op_str);
-                    else
-                        printf("\t%s %s\n", insn[j].mnemonic, insn[j].op_str);
+                    print_insn(&insn[j], addr, gLabels[i].type);
                     addr += insn[j].size;
                 }
                 cs_free(insn, count);

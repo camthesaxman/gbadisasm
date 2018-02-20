@@ -3,7 +3,8 @@ CAPSTONE_DIR := capstone-3.0.5-rc2
 CAPSTONE_LIB := $(CAPSTONE_DIR)/libcapstone.a
 
 CC := gcc
-CFLAGS := -isystem $(CAPSTONE_DIR)/include -Wall -Wextra -Wpedantic -O0 -g -fsanitize=address
+CFLAGS := -isystem $(CAPSTONE_DIR)/include -Wall -Wextra -Wpedantic -O0 -g
+#CFLAGS += -fsanitize=address
 PROGRAM := gbadisasm
 SOURCES := main.c disasm.c
 LIBS := $(CAPSTONE_LIB)
