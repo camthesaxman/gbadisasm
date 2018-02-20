@@ -67,14 +67,14 @@ int disasm_add_label(uint32_t addr, uint8_t type, char *name)
 
 // Utility Functions
 
-static char *lookup_label_name(uint32_t addr)
+static struct Label *lookup_label(uint32_t addr)
 {
     int i;
 
     for (i = 0; i < gLabelsCount; i++)
     {
         if (gLabels[i].addr == addr)
-            return gLabels[i].name;
+            return &gLabels[i];
     }
     return NULL;
 }
@@ -206,7 +206,7 @@ static void analyze(void)
                     if (is_branch(&insn[i]))
                     {
                         uint32_t target;
-                        uint32_t currAddr = addr;
+                        //uint32_t currAddr = addr;
 
                         addr += insn[i].size;
 
@@ -215,9 +215,10 @@ static void analyze(void)
 
                         target = get_branch_target(&insn[i]);
                         assert(target != 0);
-                        //printf("branch target = 0x%08X\n", target);
 
-                        if (!(target >= gLabels[li].addr && target <= currAddr))
+                        // I don't remember why I needed this condition
+                        //if (!(target >= gLabels[li].addr && target <= currAddr))
+                        if (1)
                         {
                             int lbl = disasm_add_label(target, type, NULL);
 
@@ -298,12 +299,13 @@ static void print_insn(const cs_insn *insn, uint32_t addr, int mode)
         if (is_branch(insn) && insn->id != ARM_INS_BX)
         {
             uint32_t target = get_branch_target(insn);
-            char *label = lookup_label_name(target);
+            struct Label *label = lookup_label(target);
 
-            if (label != NULL)
-                printf("\t%s %s\n", insn->mnemonic, label);
+            assert(label != NULL);  // We should have found this label in the analysis phase
+            if (label->name != NULL)
+                printf("\t%s %s\n", insn->mnemonic, label-> name);
             else
-                printf("\t%s _%08X\n", insn->mnemonic, target);
+                printf("\t%s %s_%08X\n", insn->mnemonic, label->branchType == BRANCH_TYPE_BL ? "sub" : "", target);
         }
         else if (is_pool_load(insn))
             printf("\t%s %s, _%08X\n", insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), get_pool_load(insn, addr, mode));
