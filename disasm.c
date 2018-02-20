@@ -360,7 +360,9 @@ static void print_disassembly(void)
                 // This is a function. Use the 'sub_XXXXXXXX' label
                 if (gLabels[i].branchType == BRANCH_TYPE_BL)
                 {
-                    if (addr & 3)
+                    unsigned int unalignedMask = (mode == CS_MODE_ARM) ? 3 : 1;
+
+                    if (addr & unalignedMask)
                     {
                         printf("error: function at 0x%08X is not aligned\n", addr);
                         return;
