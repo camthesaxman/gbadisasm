@@ -274,7 +274,7 @@ static void print_insn(const cs_insn *insn, uint32_t addr, int mode)
     }
     else
     {
-        if (is_branch(insn))
+        if (is_branch(insn) && insn->id != ARM_INS_BX)
             printf("\t%s _%08X\n", insn->mnemonic, get_branch_target(insn));
         else if (is_pool_load(insn))
             printf("\t%s %s, _%08X\n", insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), get_pool_load(insn, addr, mode));
@@ -384,7 +384,7 @@ static void print_disassembly(void)
             break;
         case LABEL_POOL:
             assert(gLabels[i].size = 4);
-            printf("_%08X: .4byte %08X @ pool\n", addr, word_at(addr));
+            printf("_%08X: .4byte 0x%08X @ pool\n", addr, word_at(addr));
             addr += 4;
             break;
         }
