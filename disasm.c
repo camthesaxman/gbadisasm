@@ -187,11 +187,14 @@ static int sJumpTableState = 0;
 static void jump_table_state_machine(const struct cs_insn *insn, uint32_t addr)
 {
     static uint32_t jumpTableBegin;
+    // sometimes another instruction (like a mov) can interrupt
+    static bool gracePeriod;
 
     switch (sJumpTableState)
     {
       case 0:
         // "lsl rX, rX, 2"
+        gracePeriod = false;
         if (insn->id == ARM_INS_LSL)
             goto match;
         break;
@@ -215,7 +218,7 @@ static void jump_table_state_machine(const struct cs_insn *insn, uint32_t addr)
             goto match;
         break;
       case 4:
-        // "mov pc, r0"
+        // "mov pc, rX"
         if (insn->id == ARM_INS_MOV
          && insn->detail->arm.operands[0].type == ARM_OP_REG
          && insn->detail->arm.operands[0].reg == ARM_REG_PC)
@@ -224,14 +227,17 @@ static void jump_table_state_machine(const struct cs_insn *insn, uint32_t addr)
     }
 
     // didn't match
-    sJumpTableState = 0;
+    if (gracePeriod)
+        sJumpTableState = 0;
+    else
+        gracePeriod = true;
     return;
 
   match:
     if (sJumpTableState == 4)  // all checks passed
     {
         uint32_t target;
-        uint32_t firstTarget = 0xFFFFFFFF;
+        uint32_t firstTarget = -1u;
 
         disasm_add_label(jumpTableBegin, LABEL_JUMP_TABLE, NULL);
         sJumpTableState = 0;
@@ -242,6 +248,8 @@ static void jump_table_state_machine(const struct cs_insn *insn, uint32_t addr)
             int label;
 
             target = word_at(addr);
+            if (target - ROM_LOAD_ADDR >= 0x02000000)
+                break;
             if (target < firstTarget && target > jumpTableBegin)
                 firstTarget = target;
             label = disasm_add_label(target, LABEL_THUMB_CODE, NULL);
