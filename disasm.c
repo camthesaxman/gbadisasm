@@ -8,7 +8,7 @@
 
 #include "gbadisasm.h"
 
-#define ROM_LOAD_ADDR 0x08000000
+uint32_t ROM_LOAD_ADDR;
 #define UNKNOWN_SIZE (uint32_t)-1
 
 enum BranchType
@@ -275,7 +275,7 @@ static void analyze(void)
         {
             cs_option(sCapstone, CS_OPT_MODE, (type == LABEL_ARM_CODE) ? CS_MODE_ARM : CS_MODE_THUMB);
             sJumpTableState = 0;
-            //printf("analyzing label at 0x%08X\n", addr);
+            //fprintf(stderr, "analyzing label at 0x%08X\n", addr);
             do
             {
                 count = cs_disasm(sCapstone, gInputFileBuffer + addr - ROM_LOAD_ADDR, 0x1000, addr, 0, &insn);
@@ -283,7 +283,7 @@ static void analyze(void)
                 {
                     jump_table_state_machine(&insn[i], addr);
 
-                    //printf("/*0x%08X*/ %s %s\n", addr, insn[i].mnemonic, insn[i].op_str);
+                    //fprintf(stderr, "/*0x%08X*/ %s %s\n", addr, insn[i].mnemonic, insn[i].op_str);
                     if (is_branch(&insn[i]))
                     {
                         uint32_t target;
@@ -365,6 +365,22 @@ static void print_gap(uint32_t addr, uint32_t nextaddr)
         return;
 
     assert(addr < nextaddr);
+
+    if ((addr & 3) == 2) {
+        uint16_t next_short = hword_at(addr);
+        if (next_short == 0) {
+            fputs("\t.align 2, 0\n", stdout);
+            addr += 2;
+        } else if (next_short == 0x46C0) {
+            fputs("\tnop\n", stdout);
+            addr += 2;
+        }
+        if (addr == nextaddr) {
+            return;
+        }
+    }
+
+    printf("_%08X:\n", addr);
     if (addr % gOptionDataColumnWidth != 0)
         fputs("\t.byte", stdout);
     while (addr < nextaddr)
@@ -574,10 +590,10 @@ void disasm_disassemble(void)
     cs_option(sCapstone, CS_OPT_DETAIL, CS_OPT_ON);
 
     // entry point
-    disasm_add_label(0x08000000, LABEL_ARM_CODE, NULL);
+    disasm_add_label(ROM_LOAD_ADDR, LABEL_ARM_CODE, NULL);
 
     // rom header
-    disasm_add_label(0x08000004, LABEL_DATA, NULL);
+    disasm_add_label(ROM_LOAD_ADDR + 4, LABEL_DATA, NULL);
 
     analyze();
     print_disassembly();

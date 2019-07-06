@@ -165,6 +165,7 @@ int main(int argc, char **argv)
     int i;
     const char *romFileName = NULL;
     const char *configFileName = NULL;
+    ROM_LOAD_ADDR = 0x08000000;
 
 #ifdef _WIN32
     // Work around MinGW bug that prevents us from seeing the assert message
@@ -180,6 +181,16 @@ int main(int argc, char **argv)
                 fatal_error("expected filename for option -c");
             i++;
             configFileName = argv[i];
+        }
+        else if (strcmp(argv[i], "-l") == 0)
+        {
+            char * end;
+            if (i + 1 >= argc)
+                fatal_error("expected integer for option -l");
+            i++;
+            ROM_LOAD_ADDR = strtoul(argv[i], &end, 0);
+            if (*end != 0)
+                fatal_error("invalid integer value for option -l");
         }
         else
         {
