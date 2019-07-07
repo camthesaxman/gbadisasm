@@ -262,6 +262,17 @@ static void jump_table_state_machine(const struct cs_insn *insn, uint32_t addr)
     sJumpTableState++;
 }
 
+static bool IsValidInstruction(cs_insn * insn, int type)
+{
+    if (cs_insn_group(sCapstone, insn, ARM_GRP_V4T))
+        return true;
+    if (type == LABEL_ARM_CODE) {
+        return cs_insn_group(sCapstone, insn, ARM_GRP_ARM);
+    } else {
+        return cs_insn_group(sCapstone, insn, ARM_GRP_THUMB);
+    }
+}
+
 static void analyze(void)
 {
     while (1)
@@ -289,6 +300,27 @@ static void analyze(void)
                 count = cs_disasm(sCapstone, gInputFileBuffer + addr - ROM_LOAD_ADDR, 0x1000, addr, 0, &insn);
                 for (i = 0; i < count; i++)
                 {
+                  no_inc:
+                    if (!IsValidInstruction(&insn[i], type)) {
+                        if (type == LABEL_THUMB_CODE)
+                        {
+                            int tmp_cnt;
+                            cs_insn * tmp;
+                            addr += 2;
+                            if (insn[i].size == 2) continue;
+                            tmp_cnt = cs_disasm(sCapstone, gInputFileBuffer + addr - ROM_LOAD_ADDR, 2, addr, 0, &tmp);
+                            assert(tmp_cnt == 1);
+                            free(insn[i].detail);
+                            insn[i] = *tmp;
+                            free(tmp);
+                            goto no_inc;
+                        }
+                        else
+                        {
+                            addr += 4;
+                            continue;
+                        }
+                    };
                     jump_table_state_machine(&insn[i], addr);
 
                     //fprintf(stderr, "/*0x%08X*/ %s %s\n", addr, insn[i].mnemonic, insn[i].op_str);
@@ -536,6 +568,29 @@ static void print_disassembly(void)
                 count = cs_disasm(sCapstone, gInputFileBuffer + addr - ROM_LOAD_ADDR, gLabels[i].size, addr, 0, &insn);
                 for (j = 0; j < count; j++)
                 {
+                  no_inc:
+                    if (!IsValidInstruction(&insn[j], gLabels[i].type)) {
+                        if (gLabels[i].type == LABEL_THUMB_CODE)
+                        {
+                            int tmp_cnt;
+                            cs_insn * tmp;
+                            printf("\t.hword 0x%04X\n", hword_at(addr));
+                            addr += 2;
+                            if (insn[j].size == 2) continue;
+                            tmp_cnt = cs_disasm(sCapstone, gInputFileBuffer + addr - ROM_LOAD_ADDR, 2, addr, 0, &tmp);
+                            assert(tmp_cnt == 1);
+                            free(insn[j].detail);
+                            insn[j] = *tmp;
+                            free(tmp);
+                            goto no_inc;
+                        }
+                        else
+                        {
+                            printf("\t.word 0x%08X\n", word_at(addr));
+                            addr += 4;
+                            continue;
+                        }
+                    }
                     print_insn(&insn[j], addr, gLabels[i].type);
                     addr += insn[j].size;
                 }
