@@ -128,7 +128,7 @@ static bool is_func_return(const struct cs_insn *insn)
 
     // 'bx' instruction
     if (insn->id == ARM_INS_BX)
-        return true;
+        return arminsn->cc == ARM_CC_AL;
     // 'mov' with pc as the destination
     if (insn->id == ARM_INS_MOV
      && arminsn->operands[0].type == ARM_OP_REG
@@ -323,7 +323,7 @@ static void analyze(void)
                     };
                     jump_table_state_machine(&insn[i], addr);
 
-                    //fprintf(stderr, "/*0x%08X*/ %s %s\n", addr, insn[i].mnemonic, insn[i].op_str);
+                    // fprintf(stderr, "/*0x%08X*/ %s %s\n", addr, insn[i].mnemonic, insn[i].op_str);
                     if (is_branch(&insn[i]))
                     {
                         uint32_t target;
@@ -331,8 +331,12 @@ static void analyze(void)
 
                         addr += insn[i].size;
 
+                        // For BX{COND}, only BXAL can be considered as end of function
                         if (is_func_return(&insn[i]))
                             break;
+
+                        if (insn[i].id == ARM_INS_BX) // BX{COND} when COND != AL
+                            continue;
 
                         target = get_branch_target(&insn[i]);
                         assert(target != 0);
@@ -542,14 +546,14 @@ static void print_disassembly(void)
                     if (gLabels[i].name != NULL)
                     {
                         printf("\n\t%s %s\n",
-                          (gLabels[i].type == LABEL_ARM_CODE) ? "ARM_FUNC_START" : "THUMB_FUNC_START",
+                          (gLabels[i].type == LABEL_ARM_CODE) ? "arm_func_start" : "thumb_func_start",
                           gLabels[i].name);
                         printf("%s: @ 0x%08X\n", gLabels[i].name, addr);
                     }
                     else
                     {
                         printf("\n\t%s sub_%08X\n",
-                          (gLabels[i].type == LABEL_ARM_CODE) ? "ARM_FUNC_START" : "THUMB_FUNC_START",
+                          (gLabels[i].type == LABEL_ARM_CODE) ? "arm_func_start" : "thumb_func_start",
                           addr);
                         printf("sub_%08X: @ 0x%08X\n", addr, addr);
                     }
