@@ -281,6 +281,25 @@ static void jump_table_state_machine(const struct cs_insn *insn, uint32_t addr)
     sJumpTableState++;
 }
 
+static void renew_or_add_new_bl_label(int type, uint32_t word)
+{
+    if (word & ROM_LOAD_ADDR)
+    {
+        struct Label *label_p = lookup_label(word & ~1);
+
+        if (label_p != NULL)
+        {
+            label_p->processed = false;
+            label_p->branchType = BRANCH_TYPE_BL;
+        }
+        else
+        {
+            // implicitly set to BRANCH_TYPE_BL
+            disasm_add_label(word & ~1, type, NULL);
+        }
+    }
+}
+
 static bool IsValidInstruction(cs_insn * insn, int type)
 {
     if (cs_insn_group(sCapstone, insn, ARM_GRP_V4T))
@@ -352,7 +371,17 @@ static void analyze(void)
 
                         // For BX{COND}, only BXAL can be considered as end of function
                         if (is_func_return(&insn[i]))
+                        {
+                            struct Label *label_p;
+
+                            // It's possible that handwritten code with different mode follows. 
+                            // However, this only causes problem when the address following is
+                            // incorrectly labeled as BRANCH_TYPE_B. 
+                            label_p = lookup_label(addr); 
+                            if (label_p != NULL && label_p->branchType == BRANCH_TYPE_B)
+                                label_p->branchType = BRANCH_TYPE_BL;
                             break;
+                        }
 
                         if (insn[i].id == ARM_INS_BX) // BX{COND} when COND != AL
                             continue;
@@ -364,12 +393,13 @@ static void analyze(void)
                         //if (!(target >= gLabels[li].addr && target <= currAddr))
                         if (1)
                         {
-                            int lbl = disasm_add_label(target, type, NULL);
+                            int lbl;
 
                             if (insn[i].id == ARM_INS_BL)
                             {
                                 const struct Label *next;
 
+                                lbl = disasm_add_label(target, type, NULL);
                                 if (gLabels[lbl].branchType != BRANCH_TYPE_B)
                                     gLabels[lbl].branchType = BRANCH_TYPE_BL;
                                 // if the address right after is a pool, then we know
@@ -384,7 +414,14 @@ static void analyze(void)
                             }
                             else
                             {
-                                gLabels[lbl].branchType = BRANCH_TYPE_B;
+                                struct Label *label_p = lookup_label(target);
+
+                                // make sure it's not a label already marked as function start
+                                if (label_p == NULL || label_p->branchType != BRANCH_TYPE_BL)
+                                {
+                                    lbl = disasm_add_label(target, type, NULL);
+                                    gLabels[lbl].branchType = BRANCH_TYPE_B;
+                                }
                             }
                         }
 
@@ -395,19 +432,75 @@ static void analyze(void)
                     else
                     {
                         uint32_t poolAddr;
+                        uint32_t word;
 
                         addr += insn[i].size;
 
                         if (is_func_return(&insn[i]))
+                        {
+                            struct Label *label_p;
+
+                            // It's possible that handwritten code with different mode follows. 
+                            // However, this only causes problem when the address following is
+                            // incorrectly labeled as BRANCH_TYPE_B. 
+                            label_p = lookup_label(addr); 
+                            if (label_p != NULL && label_p->branchType == BRANCH_TYPE_B)
+                                label_p->branchType = BRANCH_TYPE_BL;
                             break;
+                        }
 
                         assert(insn[i].detail != NULL);
+
+                        // looks like that this check can only detect thumb mode
+                        // anyway I still put the arm mode things here for a potential future fix
+                        if (insn[i].id == ARM_INS_ADR)
+                        {
+                            word = insn[i].detail->arm.operands[1].imm + (addr - insn[i].size)
+                                 + (type == LABEL_THUMB_CODE ? 4 : 8);
+                            if (type == LABEL_THUMB_CODE)
+                                word &= ~3;
+                            goto check_handwritten_indirect_jump;
+                        }
+
+                        // fix above check for arm mode
+                        if (type == LABEL_ARM_CODE
+                         && insn[i].id == ARM_INS_ADD
+                         && insn[i].detail->arm.operands[0].type == ARM_OP_REG
+                         && insn[i].detail->arm.operands[1].type == ARM_OP_REG
+                         && insn[i].detail->arm.operands[1].reg == ARM_REG_PC
+                         && insn[i].detail->arm.operands[2].type == ARM_OP_IMM)
+                        {
+                            word = insn[i].detail->arm.operands[2].imm + (addr - insn[i].size) + 8;
+                            goto check_handwritten_indirect_jump;
+                        }
+
                         if (is_pool_load(&insn[i]))
                         {
                             poolAddr = get_pool_load(&insn[i], addr - insn[i].size, type);
                             assert(poolAddr != 0);
                             assert((poolAddr & 3) == 0);
                             disasm_add_label(poolAddr, LABEL_POOL, NULL);
+                            word = word_at(poolAddr);
+
+                        check_handwritten_indirect_jump:
+                            if (i < count - 1) // is not last insn in the chunk
+                            {
+                                // check if it's followed with bx RX or mov PC, RX (conditional won't hurt)
+                                if (insn[i + 1].id == ARM_INS_BX)
+                                {
+                                    if (insn[i + 1].detail->arm.operands[0].type == ARM_OP_REG
+                                     && insn[i].detail->arm.operands[0].reg == insn[i + 1].detail->arm.operands[0].reg)
+                                        renew_or_add_new_bl_label(word & 1 ? LABEL_THUMB_CODE : LABEL_ARM_CODE, word);
+                                }
+                                else if (insn[i + 1].id == ARM_INS_MOV
+                                      && insn[i + 1].detail->arm.operands[0].type == ARM_OP_REG
+                                      && insn[i + 1].detail->arm.operands[0].reg == ARM_REG_PC
+                                      && insn[i + 1].detail->arm.operands[1].type == ARM_OP_REG
+                                      && insn[i].detail->arm.operands[0].reg == insn[i + 1].detail->arm.operands[1].reg)
+                                {
+                                    renew_or_add_new_bl_label(type, word);
+                                }
+                            }
                         }
                     }
                 }
@@ -565,14 +658,14 @@ static void print_disassembly(void)
                     if (gLabels[i].name != NULL)
                     {
                         printf("\n\t%s %s\n",
-                          (gLabels[i].type == LABEL_ARM_CODE) ? "arm_func_start" : "thumb_func_start",
+                          (gLabels[i].type == LABEL_ARM_CODE) ? "arm_func_start" : (addr & 2 ? "non_word_aligned_thumb_func_start" : "thumb_func_start"),
                           gLabels[i].name);
                         printf("%s: @ 0x%08X\n", gLabels[i].name, addr);
                     }
                     else
                     {
                         printf("\n\t%s sub_%08X\n",
-                          (gLabels[i].type == LABEL_ARM_CODE) ? "arm_func_start" : "thumb_func_start",
+                          (gLabels[i].type == LABEL_ARM_CODE) ? "arm_func_start" : (addr & 2 ? "non_word_aligned_thumb_func_start" : "thumb_func_start"),
                           addr);
                         printf("sub_%08X: @ 0x%08X\n", addr, addr);
                     }
