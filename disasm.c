@@ -189,6 +189,7 @@ static void jump_table_state_machine(const struct cs_insn *insn, uint32_t addr)
     static uint32_t jumpTableBegin;
     // sometimes another instruction (like a mov) can interrupt
     static bool gracePeriod;
+    static uint32_t poolAddr;
 
     switch (sJumpTableState)
     {
@@ -202,7 +203,7 @@ static void jump_table_state_machine(const struct cs_insn *insn, uint32_t addr)
         // "ldr rX, [pc, ?]"
         if (is_pool_load(insn))
         {
-            uint32_t poolAddr = get_pool_load(insn, addr, LABEL_THUMB_CODE);
+            poolAddr = get_pool_load(insn, addr, LABEL_THUMB_CODE);
             jumpTableBegin = word_at(poolAddr);
             goto match;
         }
@@ -238,6 +239,24 @@ static void jump_table_state_machine(const struct cs_insn *insn, uint32_t addr)
     {
         uint32_t target;
         uint32_t firstTarget = -1u;
+
+        // jump table is not in ROM, indicating it's from a library loaded into RAM
+        if (!(jumpTableBegin & ROM_LOAD_ADDR))
+        {
+            uint32_t offset = poolAddr + 4 - jumpTableBegin;
+
+            disasm_add_label(poolAddr + 4, LABEL_JUMP_TABLE, NULL);
+            addr = poolAddr + 4; // start of jump table
+            while (addr < word_at(poolAddr + 4) + offset)
+            {
+                int label;
+
+                label = disasm_add_label(word_at(addr) + offset, LABEL_THUMB_CODE, NULL);
+                gLabels[label].branchType = BRANCH_TYPE_B;
+                addr += 4;
+            }
+            return;
+        }
 
         disasm_add_label(jumpTableBegin, LABEL_JUMP_TABLE, NULL);
         sJumpTableState = 0;
@@ -627,7 +646,12 @@ static void print_disassembly(void)
                 printf("_%08X: @ jump table\n", addr);
                 while (addr < end)
                 {
-                    printf("\t.4byte _%08X @ case %i\n", word_at(addr), caseNum);
+                    uint32_t word = word_at(addr);
+                    
+                    if (word & ROM_LOAD_ADDR)
+                        printf("\t.4byte %08X @ case %i\n", word, caseNum);
+                    else
+                        printf("\t.4byte 0x%08X @ case %i\n", word, caseNum);
                     caseNum++;
                     addr += 4;
                 }
