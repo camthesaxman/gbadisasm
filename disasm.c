@@ -393,7 +393,7 @@ static void analyze(void)
                         //if (!(target >= gLabels[li].addr && target <= currAddr))
                         if (1)
                         {
-                            int lbl;
+                            int lbl = disasm_add_label(target, type, NULL);
 
                             if (insn[i].id == ARM_INS_BL)
                             {
@@ -414,14 +414,7 @@ static void analyze(void)
                             }
                             else
                             {
-                                struct Label *label_p = lookup_label(target);
-
-                                // make sure it's not a label already marked as function start
-                                if (label_p == NULL || label_p->branchType != BRANCH_TYPE_BL)
-                                {
-                                    lbl = disasm_add_label(target, type, NULL);
-                                    gLabels[lbl].branchType = BRANCH_TYPE_B;
-                                }
+                                gLabels[lbl].branchType = BRANCH_TYPE_B;
                             }
                         }
 
@@ -573,7 +566,37 @@ static void print_insn(const cs_insn *insn, uint32_t addr, int mode)
         }
         else if (is_pool_load(insn))
         {
-            printf("\t%s %s, _%08X\n", insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), get_pool_load(insn, addr, mode));
+            uint32_t word = get_pool_load(insn, addr, mode);
+            uint32_t value = word_at(word);
+            const struct Label *label_p;
+
+            if (value & 3 && value & ROM_LOAD_ADDR) // possibly thumb function
+            {
+                if (label_p = lookup_label(value & ~1), label_p != NULL)
+                {
+                    if (label_p->branchType == BRANCH_TYPE_BL && label_p->type == LABEL_THUMB_CODE)
+                    {
+                        if (label_p->name != NULL)
+                            printf("\t%s %s, _%08X @ =%s\n", insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), word, label_p->name);
+                        else
+                            printf("\t%s %s, _%08X @ =%08X\n", insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), word, value & ~1);
+                        return;
+                    }
+                }
+            }
+            label_p = lookup_label(value);
+            if (label_p != NULL)
+            {
+                if (label_p->name != NULL)
+                    printf("\t%s %s, _%08X @ =%s\n", insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), word, label_p->name);
+                else if (label_p->branchType == BRANCH_TYPE_BL)
+                    printf("\t%s %s, _%08X @ =sub_%08X\n", insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), word, value);
+                else // normal label
+                    printf("\t%s %s, _%08X @ =_%08X\n",
+                      insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), word, value);
+            }
+            else // raw print
+                printf("\t%s %s, _%08X @ =0x%08X\n", insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), word, value);
         }
         else
         {
@@ -589,12 +612,61 @@ static void print_insn(const cs_insn *insn, uint32_t addr, int mode)
                   cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg),
                   cs_reg_name(sCapstone, insn->detail->arm.operands[1].reg));
             }
-            // fix adr
-            else if (insn->id == ARM_INS_ADR)
+            // fix thumb adr
+            else if (insn->id == ARM_INS_ADR && mode == LABEL_THUMB_CODE)
             {
-                printf("\tadd %s, pc, #0x%X\n",
-                  cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg),
-                  insn->detail->arm.operands[1].imm);
+                uint32_t word = (insn->detail->arm.operands[1].imm + addr + 4) & ~3;
+                const struct Label *label_p = lookup_label(word);
+
+                if (label_p != NULL)
+                {
+                    if (label_p->name != NULL)
+                        printf("\tadd %s, pc, #0x%X @ =%s\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[1].imm, label_p->name);
+                    else if (label_p->branchType == BRANCH_TYPE_BL)
+                        printf("\tadd %s, pc, #0x%X @ =sub_%08X\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[1].imm, word);
+                    else
+                        printf("\tadd %s, pc, #0x%X @ =_%08X\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[1].imm, word);
+                }
+                else
+                    printf("\tadd %s, pc, #0x%X\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[1].imm);
+            }
+            // arm adr
+            else if (mode == LABEL_ARM_CODE
+                  && insn->id == ARM_INS_ADD
+                  && insn->detail->arm.operands[0].type == ARM_OP_REG
+                  && insn->detail->arm.operands[1].type == ARM_OP_REG
+                  && insn->detail->arm.operands[1].reg == ARM_REG_PC
+                  && insn->detail->arm.operands[2].type == ARM_OP_IMM)
+            {
+                uint32_t word = insn->detail->arm.operands[2].imm + addr + 8;
+                const struct Label *label_p;
+
+                if (word & 3 && word & ROM_LOAD_ADDR) // possibly thumb function
+                {
+                    if (label_p = lookup_label(word & ~1), label_p != NULL)
+                    {
+                        if (label_p->branchType == BRANCH_TYPE_BL && label_p->type == LABEL_THUMB_CODE)
+                        {
+                            if (label_p->name != NULL)
+                                printf("\tadd %s, pc, #0x%X @ =%s\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[2].imm, label_p->name);
+                            else
+                                printf("\tadd %s, pc, #0x%X @ =sub_%08X\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[2].imm, word & ~1);
+                            return;
+                        }
+                    }
+                }
+                label_p = lookup_label(word);
+                if (label_p != NULL)
+                {
+                    if (label_p->name != NULL)
+                        printf("\tadd %s, pc, #0x%X @ =%s\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[2].imm, label_p->name);
+                    else if (label_p->branchType == BRANCH_TYPE_BL)
+                        printf("\tadd %s, pc, #0x%X @ =sub_%08X\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[2].imm, word);
+                    else
+                        printf("\tadd %s, pc, #0x%X @ =_%08X\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[2].imm, word);
+                }
+                else // raw print
+                    printf("\tadd %s, pc, #0x%X @ =0x%08X\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[2].imm, word);
             }
             else
                 printf("\t%s %s\n", insn->mnemonic, insn->op_str);
@@ -621,6 +693,11 @@ static void print_disassembly(void)
         if (gLabels[i].type == LABEL_ARM_CODE || gLabels[i].type == LABEL_THUMB_CODE)
             assert(gLabels[i].processed);
     }
+    // check mode exchange right after func return
+    for (i = 1; i < gLabelsCount; i++)
+        if ((gLabels[i - 1].type == LABEL_ARM_CODE && gLabels[i].type == LABEL_THUMB_CODE)
+         || (gLabels[i - 1].type == LABEL_THUMB_CODE && gLabels[i].type == LABEL_ARM_CODE))
+            gLabels[i].branchType = BRANCH_TYPE_BL;
 
     i = 0;
     while (addr < ROM_LOAD_ADDR + gInputFileBufferSize)
@@ -652,7 +729,7 @@ static void print_disassembly(void)
 
                     if (addr & unalignedMask)
                     {
-                        printf("error: function at 0x%08X is not aligned\n", addr);
+                        fprintf(stderr, "error: function at 0x%08X is not aligned\n", addr);
                         return;
                     }
                     if (gLabels[i].name != NULL)
@@ -727,9 +804,39 @@ static void print_disassembly(void)
             }
             break;
         case LABEL_POOL:
-            //assert(gLabels[i].size == 4);
-            printf("_%08X: .4byte 0x%08X\n", addr, word_at(addr));
-            addr += 4;
+            {
+                uint32_t value = word_at(addr);
+                const struct Label *label_p;
+
+                if (value & 3 && value & ROM_LOAD_ADDR) // possibly thumb function
+                {
+                    if (label_p = lookup_label(value & ~1), label_p != NULL)
+                    {
+                        if (label_p->branchType == BRANCH_TYPE_BL && label_p->type == LABEL_THUMB_CODE)
+                        {
+                            if (label_p->name != NULL)
+                                printf("_%08X: .4byte %s\n", addr, label_p->name);
+                            else
+                                printf("_%08X: .4byte sub_%08X\n", addr, value & ~1);
+                            addr += 4;
+                            break;
+                        }
+                    }
+                }
+                label_p = lookup_label(value);
+                if (label_p != NULL)
+                {
+                    if (label_p->name != NULL)
+                        printf("_%08X: .4byte %s\n", addr, label_p->name);
+                    else if (label_p->branchType == BRANCH_TYPE_BL)
+                        printf("_%08X: .4byte sub_%08X\n", addr, value);
+                    else // normal label
+                        printf("_%08X: .4byte _%08X\n", addr, value);
+                }
+                else // raw print
+                    printf("_%08X: .4byte 0x%08X\n", addr, value);
+                addr += 4;
+            }
             break;
         case LABEL_JUMP_TABLE:
             {
@@ -742,7 +849,7 @@ static void print_disassembly(void)
                     uint32_t word = word_at(addr);
                     
                     if (word & ROM_LOAD_ADDR)
-                        printf("\t.4byte %08X @ case %i\n", word, caseNum);
+                        printf("\t.4byte _%08X @ case %i\n", word, caseNum);
                     else
                         printf("\t.4byte 0x%08X @ case %i\n", word, caseNum);
                     caseNum++;
