@@ -804,9 +804,39 @@ static void print_disassembly(void)
             }
             break;
         case LABEL_POOL:
-            //assert(gLabels[i].size == 4);
-            printf("_%08X: .4byte 0x%08X\n", addr, word_at(addr));
-            addr += 4;
+            {
+                uint32_t value = word_at(addr);
+                const struct Label *label_p;
+
+                if (value & 3 && value & ROM_LOAD_ADDR) // possibly thumb function
+                {
+                    if (label_p = lookup_label(value & ~1), label_p != NULL)
+                    {
+                        if (label_p->branchType == BRANCH_TYPE_BL && label_p->type == LABEL_THUMB_CODE)
+                        {
+                            if (label_p->name != NULL)
+                                printf("_%08X: .4byte %s\n", addr, label_p->name);
+                            else
+                                printf("_%08X: .4byte sub_%08X\n", addr, value & ~1);
+                            addr += 4;
+                            break;
+                        }
+                    }
+                }
+                label_p = lookup_label(value);
+                if (label_p != NULL)
+                {
+                    if (label_p->name != NULL)
+                        printf("_%08X: .4byte %s\n", addr, label_p->name);
+                    else if (label_p->branchType == BRANCH_TYPE_BL)
+                        printf("_%08X: .4byte sub_%08X\n", addr, value);
+                    else // normal label
+                        printf("_%08X: .4byte _%08X\n", addr, value);
+                }
+                else // raw print
+                    printf("_%08X: .4byte 0x%08X\n", addr, value);
+                addr += 4;
+            }
             break;
         case LABEL_JUMP_TABLE:
             {
