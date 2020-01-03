@@ -693,6 +693,11 @@ static void print_disassembly(void)
         if (gLabels[i].type == LABEL_ARM_CODE || gLabels[i].type == LABEL_THUMB_CODE)
             assert(gLabels[i].processed);
     }
+    // check mode exchange right after func return
+    for (i = 1; i < gLabelsCount; i++)
+        if ((gLabels[i - 1].type == LABEL_ARM_CODE && gLabels[i].type == LABEL_THUMB_CODE)
+         || (gLabels[i - 1].type == LABEL_THUMB_CODE && gLabels[i].type == LABEL_ARM_CODE))
+            gLabels[i].branchType = BRANCH_TYPE_BL;
 
     i = 0;
     while (addr < ROM_LOAD_ADDR + gInputFileBufferSize)
@@ -724,7 +729,7 @@ static void print_disassembly(void)
 
                     if (addr & unalignedMask)
                     {
-                        printf("error: function at 0x%08X is not aligned\n", addr);
+                        fprintf(stderr, "error: function at 0x%08X is not aligned\n", addr);
                         return;
                     }
                     if (gLabels[i].name != NULL)
