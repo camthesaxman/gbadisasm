@@ -742,7 +742,7 @@ static void print_disassembly(void)
                     uint32_t word = word_at(addr);
                     
                     if (word & ROM_LOAD_ADDR)
-                        printf("\t.4byte %08X @ case %i\n", word, caseNum);
+                        printf("\t.4byte _%08X @ case %i\n", word, caseNum);
                     else
                         printf("\t.4byte 0x%08X @ case %i\n", word, caseNum);
                     caseNum++;
