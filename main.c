@@ -17,7 +17,7 @@ struct ConfigLabel
 uint8_t *gInputFileBuffer;
 size_t gInputFileBufferSize;
 
-static void fatal_error(const char *fmt, ...)
+void fatal_error(const char *fmt, ...)
 {
     va_list args;
 
@@ -39,6 +39,8 @@ static void read_input_file(const char *fname)
     gInputFileBufferSize = ftell(file);
     fseek(file, 0, SEEK_SET);
     gInputFileBuffer = malloc(gInputFileBufferSize);
+    if (gInputFileBuffer == NULL)
+        fatal_error("failed to alloc file buffer for '%s'", fname);
     if (fread(gInputFileBuffer, 1, gInputFileBufferSize, file) != gInputFileBufferSize)
         fatal_error("failed to read from file '%s'", fname);
     fclose(file);
@@ -83,6 +85,8 @@ static char *dup_string(const char *s)
 {
     char *new = malloc(strlen(s) + 1);
 
+    if (new == NULL)
+        fatal_error("could not alloc space for string '%s'", s);
     strcpy(new, s);
     return new;
 }
@@ -102,6 +106,8 @@ static void read_config(const char *fname)
     size = ftell(file);
     fseek(file, 0, SEEK_SET);
     buffer = malloc(size + 1);
+    if (buffer == NULL)
+        fatal_error("could not alloc buffer for '%s'", fname);
     if (fread(buffer, 1, size, file) != size)
         fatal_error("failed to read from file '%s'", fname);
     buffer[size] = '\0';

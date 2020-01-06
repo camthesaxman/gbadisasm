@@ -8,6 +8,8 @@
 
 #include "gbadisasm.h"
 
+extern void fatal_error(const char *fmt, ...);
+
 uint32_t ROM_LOAD_ADDR;
 #define UNKNOWN_SIZE (uint32_t)-1
 
@@ -25,11 +27,13 @@ struct Label
     uint8_t branchType;
     uint32_t size;
     bool processed;
+    bool isFunc; // 100% sure it's a function, which cannot be changed to BRANCH_TYPE_B. 
     char *name;
 };
 
 struct Label *gLabels = NULL;
 int gLabelsCount = 0;
+static int sLabelBufferCount = 0;
 static csh sCapstone;
 
 const bool gOptionShowAddrComments = false;
@@ -52,7 +56,15 @@ int disasm_add_label(uint32_t addr, uint8_t type, char *name)
     }
 
     i = gLabelsCount++;
-    gLabels = realloc(gLabels, gLabelsCount * sizeof(*gLabels));
+
+    if (gLabelsCount > sLabelBufferCount) // need realloc
+    {
+        sLabelBufferCount = 2 * gLabelsCount;
+        gLabels = realloc(gLabels, sLabelBufferCount * sizeof(*gLabels));
+
+        if (gLabels == NULL)
+            fatal_error("failed to alloc space for labels. ");
+    }
     gLabels[i].addr = addr;
     gLabels[i].type = type;
     if (type == LABEL_ARM_CODE || type == LABEL_THUMB_CODE)
@@ -62,6 +74,7 @@ int disasm_add_label(uint32_t addr, uint8_t type, char *name)
     gLabels[i].size = UNKNOWN_SIZE;
     gLabels[i].processed = false;
     gLabels[i].name = name;
+    gLabels[i].isFunc = false;
     return i;
 }
 
@@ -281,7 +294,7 @@ static void jump_table_state_machine(const struct cs_insn *insn, uint32_t addr)
     sJumpTableState++;
 }
 
-static void renew_or_add_new_bl_label(int type, uint32_t word)
+static void renew_or_add_new_func_label(int type, uint32_t word)
 {
     if (word & ROM_LOAD_ADDR)
     {
@@ -289,13 +302,15 @@ static void renew_or_add_new_bl_label(int type, uint32_t word)
 
         if (label_p != NULL)
         {
+            // maybe it has been processed as a non-function label
             label_p->processed = false;
             label_p->branchType = BRANCH_TYPE_BL;
+            label_p->isFunc = true;
         }
         else
         {
             // implicitly set to BRANCH_TYPE_BL
-            disasm_add_label(word & ~1, type, NULL);
+            gLabels[disasm_add_label(word & ~1, type, NULL)].isFunc = true;
         }
     }
 }
@@ -377,9 +392,15 @@ static void analyze(void)
                             // It's possible that handwritten code with different mode follows. 
                             // However, this only causes problem when the address following is
                             // incorrectly labeled as BRANCH_TYPE_B. 
-                            label_p = lookup_label(addr); 
-                            if (label_p != NULL && label_p->branchType == BRANCH_TYPE_B)
+                            label_p = lookup_label(addr);
+                            if (label_p != NULL
+                             && (label_p->type == LABEL_THUMB_CODE || label_p->type == LABEL_ARM_CODE)
+                             && label_p->type != type
+                             && label_p->branchType == BRANCH_TYPE_B)
+                            {
                                 label_p->branchType = BRANCH_TYPE_BL;
+                                label_p->isFunc = true;
+                            }
                             break;
                         }
 
@@ -395,26 +416,33 @@ static void analyze(void)
                         {
                             int lbl = disasm_add_label(target, type, NULL);
 
-                            if (insn[i].id == ARM_INS_BL)
+                            if (!gLabels[lbl].isFunc) // do nothing if it's 100% a func (from func ptr, or instant mode exchange)
                             {
-                                const struct Label *next;
-
-                                lbl = disasm_add_label(target, type, NULL);
-                                if (gLabels[lbl].branchType != BRANCH_TYPE_B)
-                                    gLabels[lbl].branchType = BRANCH_TYPE_BL;
-                                // if the address right after is a pool, then we know
-                                // for sure that this is a far jump and not a function call
-                                if (((next = lookup_label(addr)) != NULL && next->type == LABEL_POOL)
-                                // if the 2 bytes following are zero, assume it's padding
-                                 || hword_at(addr) == 0)
+                                if (insn[i].id == ARM_INS_BL)
                                 {
-                                    gLabels[lbl].branchType = BRANCH_TYPE_B;
-                                    break;
+                                    const struct Label *next;
+
+                                    lbl = disasm_add_label(target, type, NULL);
+                                    if (gLabels[lbl].branchType != BRANCH_TYPE_B)
+                                        gLabels[lbl].branchType = BRANCH_TYPE_BL;
+                                    // if the address right after is a pool, then we know
+                                    // for sure that this is a far jump and not a function call
+                                    if (((next = lookup_label(addr)) != NULL && next->type == LABEL_POOL)
+                                    // if the 2 bytes following are zero, assume it's padding
+                                     || hword_at(addr) == 0)
+                                    {
+                                        gLabels[lbl].branchType = BRANCH_TYPE_B;
+                                        break;
+                                    }
                                 }
-                            }
-                            else
-                            {
-                                gLabels[lbl].branchType = BRANCH_TYPE_B;
+                                else
+                                {
+                                    // the label might be given a name in .cfg file, but it's actually not a function
+                                    if (gLabels[lbl].name != NULL)
+                                        free(gLabels[lbl].name);
+                                    gLabels[lbl].name = NULL;
+                                    gLabels[lbl].branchType = BRANCH_TYPE_B;
+                                }
                             }
                         }
 
@@ -436,9 +464,15 @@ static void analyze(void)
                             // It's possible that handwritten code with different mode follows. 
                             // However, this only causes problem when the address following is
                             // incorrectly labeled as BRANCH_TYPE_B. 
-                            label_p = lookup_label(addr); 
-                            if (label_p != NULL && label_p->branchType == BRANCH_TYPE_B)
+                            label_p = lookup_label(addr);
+                            if (label_p != NULL
+                             && (label_p->type == LABEL_THUMB_CODE || label_p->type == LABEL_ARM_CODE)
+                             && label_p->type != type
+                             && label_p->branchType == BRANCH_TYPE_B)
+                            {
                                 label_p->branchType = BRANCH_TYPE_BL;
+                                label_p->isFunc = true;
+                            }
                             break;
                         }
 
@@ -483,7 +517,7 @@ static void analyze(void)
                                 {
                                     if (insn[i + 1].detail->arm.operands[0].type == ARM_OP_REG
                                      && insn[i].detail->arm.operands[0].reg == insn[i + 1].detail->arm.operands[0].reg)
-                                        renew_or_add_new_bl_label(word & 1 ? LABEL_THUMB_CODE : LABEL_ARM_CODE, word);
+                                        renew_or_add_new_func_label(word & 1 ? LABEL_THUMB_CODE : LABEL_ARM_CODE, word);
                                 }
                                 else if (insn[i + 1].id == ARM_INS_MOV
                                       && insn[i + 1].detail->arm.operands[0].type == ARM_OP_REG
@@ -491,7 +525,7 @@ static void analyze(void)
                                       && insn[i + 1].detail->arm.operands[1].type == ARM_OP_REG
                                       && insn[i].detail->arm.operands[0].reg == insn[i + 1].detail->arm.operands[1].reg)
                                 {
-                                    renew_or_add_new_bl_label(type, word);
+                                    renew_or_add_new_func_label(type, word);
                                 }
                             }
                         }
@@ -579,7 +613,7 @@ static void print_insn(const cs_insn *insn, uint32_t addr, int mode)
                         if (label_p->name != NULL)
                             printf("\t%s %s, _%08X @ =%s\n", insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), word, label_p->name);
                         else
-                            printf("\t%s %s, _%08X @ =%08X\n", insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), word, value & ~1);
+                            printf("\t%s %s, _%08X @ =sub_%08X\n", insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), word, value & ~1);
                         return;
                     }
                 }
@@ -587,16 +621,19 @@ static void print_insn(const cs_insn *insn, uint32_t addr, int mode)
             label_p = lookup_label(value);
             if (label_p != NULL)
             {
-                if (label_p->name != NULL)
-                    printf("\t%s %s, _%08X @ =%s\n", insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), word, label_p->name);
-                else if (label_p->branchType == BRANCH_TYPE_BL)
-                    printf("\t%s %s, _%08X @ =sub_%08X\n", insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), word, value);
-                else // normal label
-                    printf("\t%s %s, _%08X @ =_%08X\n",
-                      insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), word, value);
+                if (label_p->type != LABEL_THUMB_CODE)
+                {
+                    if (label_p->name != NULL)
+                        printf("\t%s %s, _%08X @ =%s\n", insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), word, label_p->name);
+                    else if (label_p->branchType == BRANCH_TYPE_BL)
+                        printf("\t%s %s, _%08X @ =sub_%08X\n", insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), word, value);
+                    else // normal label
+                        printf("\t%s %s, _%08X @ =_%08X\n",
+                          insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), word, value);
+                    return;
+                }
             }
-            else // raw print
-                printf("\t%s %s, _%08X @ =0x%08X\n", insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), word, value);
+            printf("\t%s %s, _%08X @ =0x%08X\n", insn->mnemonic, cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), word, value);
         }
         else
         {
@@ -620,15 +657,18 @@ static void print_insn(const cs_insn *insn, uint32_t addr, int mode)
 
                 if (label_p != NULL)
                 {
-                    if (label_p->name != NULL)
-                        printf("\tadd %s, pc, #0x%X @ =%s\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[1].imm, label_p->name);
-                    else if (label_p->branchType == BRANCH_TYPE_BL)
-                        printf("\tadd %s, pc, #0x%X @ =sub_%08X\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[1].imm, word);
-                    else
-                        printf("\tadd %s, pc, #0x%X @ =_%08X\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[1].imm, word);
+                    if (label_p->type != LABEL_THUMB_CODE)
+                    {
+                        if (label_p->name != NULL)
+                            printf("\tadd %s, pc, #0x%X @ =%s\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[1].imm, label_p->name);
+                        else if (label_p->branchType == BRANCH_TYPE_BL)
+                            printf("\tadd %s, pc, #0x%X @ =sub_%08X\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[1].imm, word);
+                        else
+                            printf("\tadd %s, pc, #0x%X @ =_%08X\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[1].imm, word);
+                        return;
+                    }
                 }
-                else
-                    printf("\tadd %s, pc, #0x%X\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[1].imm);
+                printf("\tadd %s, pc, #0x%X\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[1].imm);
             }
             // arm adr
             else if (mode == LABEL_ARM_CODE
@@ -658,15 +698,18 @@ static void print_insn(const cs_insn *insn, uint32_t addr, int mode)
                 label_p = lookup_label(word);
                 if (label_p != NULL)
                 {
-                    if (label_p->name != NULL)
-                        printf("\tadd %s, pc, #0x%X @ =%s\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[2].imm, label_p->name);
-                    else if (label_p->branchType == BRANCH_TYPE_BL)
-                        printf("\tadd %s, pc, #0x%X @ =sub_%08X\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[2].imm, word);
-                    else
-                        printf("\tadd %s, pc, #0x%X @ =_%08X\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[2].imm, word);
+                    if (label_p->type != LABEL_THUMB_CODE)
+                    {
+                        if (label_p->name != NULL)
+                            printf("\tadd %s, pc, #0x%X @ =%s\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[2].imm, label_p->name);
+                        else if (label_p->branchType == BRANCH_TYPE_BL)
+                            printf("\tadd %s, pc, #0x%X @ =sub_%08X\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[2].imm, word);
+                        else
+                            printf("\tadd %s, pc, #0x%X @ =_%08X\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[2].imm, word);
+                        return;
+                    }
                 }
-                else // raw print
-                    printf("\tadd %s, pc, #0x%X @ =0x%08X\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[2].imm, word);
+                printf("\tadd %s, pc, #0x%X @ =0x%08X\n", cs_reg_name(sCapstone, insn->detail->arm.operands[0].reg), insn->detail->arm.operands[2].imm, word);
             }
             else
                 printf("\t%s %s\n", insn->mnemonic, insn->op_str);
@@ -826,15 +869,19 @@ static void print_disassembly(void)
                 label_p = lookup_label(value);
                 if (label_p != NULL)
                 {
-                    if (label_p->name != NULL)
-                        printf("_%08X: .4byte %s\n", addr, label_p->name);
-                    else if (label_p->branchType == BRANCH_TYPE_BL)
-                        printf("_%08X: .4byte sub_%08X\n", addr, value);
-                    else // normal label
-                        printf("_%08X: .4byte _%08X\n", addr, value);
+                    if (label_p->type != LABEL_THUMB_CODE)
+                    {
+                        if (label_p->name != NULL)
+                            printf("_%08X: .4byte %s\n", addr, label_p->name);
+                        else if (label_p->branchType == BRANCH_TYPE_BL)
+                            printf("_%08X: .4byte sub_%08X\n", addr, value);
+                        else // normal label
+                            printf("_%08X: .4byte _%08X\n", addr, value);
+                        addr += 4;
+                        break;
+                    }
                 }
-                else // raw print
-                    printf("_%08X: .4byte 0x%08X\n", addr, value);
+                printf("_%08X: .4byte 0x%08X\n", addr, value);
                 addr += 4;
             }
             break;
@@ -865,7 +912,8 @@ static void print_disassembly(void)
         nextAddr = gLabels[i].addr;
         assert(addr <= nextAddr);
 
-        print_gap(addr, nextAddr);
+        if (nextAddr <= ROM_LOAD_ADDR + gInputFileBufferSize) // prevent out-of-bound read
+            print_gap(addr, nextAddr);
         addr = nextAddr;
     }
 }
