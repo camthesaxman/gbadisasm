@@ -8,6 +8,8 @@
 
 #include "gbadisasm.h"
 
+extern void fatal_error(const char *fmt, ...);
+
 uint32_t ROM_LOAD_ADDR;
 #define UNKNOWN_SIZE (uint32_t)-1
 
@@ -54,6 +56,8 @@ int disasm_add_label(uint32_t addr, uint8_t type, char *name)
 
     i = gLabelsCount++;
     gLabels = realloc(gLabels, gLabelsCount * sizeof(*gLabels));
+    if (gLabels == NULL)
+        fatal_error("failed to alloc space for labels. ");
     gLabels[i].addr = addr;
     gLabels[i].type = type;
     if (type == LABEL_ARM_CODE || type == LABEL_THUMB_CODE)
