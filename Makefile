@@ -2,8 +2,15 @@ CAPSTONE_ARCHIVE := capstone-3.0.5-rc2.tar.gz
 CAPSTONE_DIR := capstone-3.0.5-rc2
 CAPSTONE_LIB := $(CAPSTONE_DIR)/libcapstone.a
 
+DEBUG ?= 0
+
 CC := gcc
-CFLAGS := -isystem $(CAPSTONE_DIR)/include -Wall -Wextra -Wpedantic -O0 -g
+CFLAGS := -isystem $(CAPSTONE_DIR)/include -Wall -Wextra -Wpedantic
+ifeq ($(DEBUG),1)
+CFLAGS += -O0 -g
+else
+CFLAGS += -O3
+endif
 #CFLAGS += -fsanitize=address
 PROGRAM := gbadisasm
 SOURCES := main.c disasm.c

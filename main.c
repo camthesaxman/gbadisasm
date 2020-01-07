@@ -17,7 +17,7 @@ struct ConfigLabel
 uint8_t *gInputFileBuffer;
 size_t gInputFileBufferSize;
 
-static void fatal_error(const char *fmt, ...)
+void fatal_error(const char *fmt, ...)
 {
     va_list args;
 
@@ -39,6 +39,8 @@ static void read_input_file(const char *fname)
     gInputFileBufferSize = ftell(file);
     fseek(file, 0, SEEK_SET);
     gInputFileBuffer = malloc(gInputFileBufferSize);
+    if (gInputFileBuffer == NULL)
+        fatal_error("failed to alloc file buffer for '%s'", fname);
     if (fread(gInputFileBuffer, 1, gInputFileBufferSize, file) != gInputFileBufferSize)
         fatal_error("failed to read from file '%s'", fname);
     fclose(file);
@@ -83,6 +85,8 @@ static char *dup_string(const char *s)
 {
     char *new = malloc(strlen(s) + 1);
 
+    if (new == NULL)
+        fatal_error("could not alloc space for string '%s'", s);
     strcpy(new, s);
     return new;
 }
@@ -102,6 +106,8 @@ static void read_config(const char *fname)
     size = ftell(file);
     fseek(file, 0, SEEK_SET);
     buffer = malloc(size + 1);
+    if (buffer == NULL)
+        fatal_error("could not alloc buffer for '%s'", fname);
     if (fread(buffer, 1, size, file) != size)
         fatal_error("failed to read from file '%s'", fname);
     buffer[size] = '\0';
@@ -165,6 +171,7 @@ int main(int argc, char **argv)
     int i;
     const char *romFileName = NULL;
     const char *configFileName = NULL;
+    ROM_LOAD_ADDR = 0x08000000;
 
 #ifdef _WIN32
     // Work around MinGW bug that prevents us from seeing the assert message
@@ -180,6 +187,16 @@ int main(int argc, char **argv)
                 fatal_error("expected filename for option -c");
             i++;
             configFileName = argv[i];
+        }
+        else if (strcmp(argv[i], "-l") == 0)
+        {
+            char * end;
+            if (i + 1 >= argc)
+                fatal_error("expected integer for option -l");
+            i++;
+            ROM_LOAD_ADDR = strtoul(argv[i], &end, 0);
+            if (*end != 0)
+                fatal_error("invalid integer value for option -l");
         }
         else
         {
