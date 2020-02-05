@@ -326,6 +326,24 @@ static bool IsValidInstruction(cs_insn * insn, int type)
     }
 }
 
+static uint32_t next_label_addr(uint32_t addr)
+{
+    uint32_t labelAddr = 0xFFFFFFFF;
+    int i;
+
+    for (i = 0; i < gLabelsCount; ++i)
+    {
+        if (gLabels[i].addr == addr
+         && (gLabels[i].type == LABEL_ARM_CODE || gLabels[i].type == LABEL_THUMB_CODE))
+            continue;
+
+        if (gLabels[i].addr >= addr
+         && gLabels[i].addr < labelAddr)
+            labelAddr = gLabels[i].addr;
+    }
+    return labelAddr == 0xFFFFFFFF ? 0 : labelAddr;
+}
+
 static void analyze(void)
 {
     while (1)
@@ -350,9 +368,34 @@ static void analyze(void)
             //fprintf(stderr, "analyzing label at 0x%08X\n", addr);
             do
             {
-                count = cs_disasm(sCapstone, gInputFileBuffer + addr - ROM_LOAD_ADDR, 0x1000, addr, 0, &insn);
+                // Note: This is a mitigation instead of solution. 
+                /*
+                 * Remaining BUG Scenario: 
+                 * (.code 16)
+                 * label_A:
+                 *     (code)
+                 *     ldr rX, pool_A
+                 *     (code)
+                 * label_B:
+                 *     (code)
+                 *     bl somewhere @ far jump, not a procedure call
+                 * pool_A:
+                 *     .long ...
+                 * Unluckily, label_B is processed before label_A so it doesn't know pool_A is a pool,
+                 * so it keeps disassembling until it hits something that can break out of the current
+                 * code chunk iteration. It's usually not a problem but something in the data pool may
+                 * be diassembled to ldr, resulting in registering an incorrect pool label, which screws
+                 * up later analysis. 
+                 */
+                uint32_t labelAddr = next_label_addr(addr);
+
+                if (labelAddr <= addr && labelAddr != 0)
+                    break;
+                count = cs_disasm(sCapstone, gInputFileBuffer + addr - ROM_LOAD_ADDR, labelAddr == 0 ? 0x1000 : labelAddr - addr, addr, 0, &insn);
                 for (i = 0; i < count; i++)
                 {
+                    if (labelAddr <= addr && labelAddr != 0)
+                        break;
                   no_inc:
                     if (!IsValidInstruction(&insn[i], type)) {
                         if (type == LABEL_THUMB_CODE)
@@ -434,6 +477,7 @@ static void analyze(void)
                                         gLabels[lbl].branchType = BRANCH_TYPE_B;
                                         break;
                                     }
+                                    // if you want to force set a label to BRANCH_TYPE_B, hardcode it here. 
                                 }
                                 else
                                 {
@@ -507,6 +551,8 @@ static void analyze(void)
                             assert(poolAddr != 0);
                             assert((poolAddr & 3) == 0);
                             disasm_add_label(poolAddr, LABEL_POOL, NULL);
+                            if (poolAddr < labelAddr && poolAddr > addr - insn[i].size)
+                                labelAddr = poolAddr;
                             word = word_at(poolAddr);
 
                         check_handwritten_indirect_jump:
