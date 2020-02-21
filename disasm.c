@@ -472,7 +472,8 @@ static void analyze(void)
                                     // for sure that this is a far jump and not a function call
                                     if (((next = lookup_label(addr)) != NULL && next->type == LABEL_POOL)
                                     // if the 2 bytes following are zero, assume it's padding
-                                     || hword_at(addr) == 0)
+                                    // Note that we need to make sure it's not 4-byte aligned since we can now be in ARM mode
+                                     || ((addr & 2) && hword_at(addr) == 0))
                                     {
                                         gLabels[lbl].branchType = BRANCH_TYPE_B;
                                         break;
