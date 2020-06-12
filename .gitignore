@@ -5,3 +5,7 @@ hashtable.h
 capstone-3.0.5-rc2
 *.gba
 .fuse_hidden*
+*.s
+clover.cfg
+*.stackdump
+*.dump
